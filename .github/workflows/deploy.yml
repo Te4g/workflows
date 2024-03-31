@@ -1,0 +1,36 @@
+name: Deploy
+
+on:
+    workflow_call:
+        secrets:
+            - DEPLOY_HOST
+            - DEPLOY_PORT
+            - DEPLOY_USER
+            - DEPLOY_KEY
+
+
+env:
+    DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+    DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+    DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+    DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+
+jobs:
+    deploy:
+        runs-on: ubuntu-latest
+        steps:
+            -   uses: actions/checkout@v3
+            -   name: Setup SSH key
+                run: |
+                    mkdir -p ~/.ssh
+                    echo "$DEPLOY_KEY" > ~/.ssh/id_rsa
+                    chmod 600 ~/.ssh/id_rsa
+            -   name: Create destination directory
+                run: |
+                    ssh -o StrictHostKeyChecking=no -p $DEPLOY_PORT $DEPLOY_USER@$DEPLOY_HOST "mkdir -p /srv/www/${{ github.event.repository.name }}"
+            -   name: Deploy with rsync
+                run: |
+                    rsync -avz --delete --exclude-from ".rsyncignore" -e "ssh -o StrictHostKeyChecking=no -p $DEPLOY_PORT" ./ $DEPLOY_USER@$DEPLOY_HOST:/srv/www/${{ github.event.repository.name }}
+            -   name: Build containers
+                run: |
+                    ssh -o StrictHostKeyChecking=no -p $DEPLOY_PORT $DEPLOY_USER@$DEPLOY_HOST "cd /srv/www/${{ github.event.repository.name }} && make install-prod"
