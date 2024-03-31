@@ -22,6 +22,7 @@ jobs:
                 uses: actions/download-artifact@v4
                 with:
                     name: build
+                continue-on-error: true
             -   name: Setup SSH key
                 run: |
                     mkdir -p ~/.ssh
