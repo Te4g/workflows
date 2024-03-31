@@ -3,10 +3,14 @@ name: Deploy
 on:
     workflow_call:
         secrets:
-            - DEPLOY_HOST
-            - DEPLOY_PORT
-            - DEPLOY_USER
-            - DEPLOY_KEY
+            DEPLOY_HOST:
+                required: true
+            DEPLOY_PORT:
+                required: true
+            DEPLOY_USER:
+                required: true
+            DEPLOY_KEY:
+                required: true
 
 jobs:
     deploy:
