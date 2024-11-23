@@ -12,5 +12,5 @@ Repositories using the reusable workflow must do the following:
     - `DEPLOY_USER`: The user to deploy as
     - `DEPLOY_KEY`: The private key to use for deployment
         - generate a new key `ssh-keygen -t ed25519 -C "deploy@my-repo"`
-        - Add the public key to the server's `~/.ssh/authorized_keys` file
+        - Add the public key to the server's `~/.ssh/authorized_keys` file `ssh-copy-id -i {the_key} {user}@{host}
         - Set the private key as the value of the `DEPLOY_KEY` github secret
