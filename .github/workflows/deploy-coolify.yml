@@ -1,0 +1,306 @@
+name: Deploy
+
+on:
+  workflow_call:
+    inputs:
+      coolify-url:
+        description: "Coolify base URL, without the /api/v1 suffix"
+        required: true
+        type: string
+      service-uuid:
+        description: "Coolify service UUID"
+        required: true
+        type: string
+      compose-file:
+        description: "Path to the repo-owned Coolify compose file"
+        required: true
+        type: string
+      env-json:
+        description: "Optional JSON object or array describing service env vars to update"
+        required: false
+        type: string
+        default: ""
+      force-rebuild:
+        description: "Force a Coolify rebuild without cache"
+        required: false
+        type: boolean
+        default: false
+      wait-for-completion:
+        description: "Wait for the Coolify deployment to finish"
+        required: false
+        type: boolean
+        default: true
+      timeout-seconds:
+        description: "Maximum time to wait for deployment completion"
+        required: false
+        type: number
+        default: 900
+      poll-interval-seconds:
+        description: "Polling interval while waiting for deployment completion"
+        required: false
+        type: number
+        default: 5
+    secrets:
+      coolify-token:
+        required: true
+    outputs:
+      deployment_uuid:
+        description: "Coolify deployment UUID"
+        value: ${{ jobs.deploy.outputs.deployment_uuid }}
+      deployment_url:
+        description: "Coolify deployment URL when available"
+        value: ${{ jobs.deploy.outputs.deployment_url }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    outputs:
+      deployment_uuid: ${{ steps.deploy.outputs.deployment_uuid }}
+      deployment_url: ${{ steps.deploy.outputs.deployment_url }}
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+
+      - name: Update Coolify service compose and trigger deployment
+        id: deploy
+        env:
+          COOLIFY_URL: ${{ inputs.coolify-url }}
+          COOLIFY_TOKEN: ${{ secrets.coolify-token }}
+          SERVICE_UUID: ${{ inputs.service-uuid }}
+          COMPOSE_FILE: ${{ inputs.compose-file }}
+          ENV_JSON: ${{ inputs.env-json }}
+          FORCE_REBUILD: ${{ inputs.force-rebuild }}
+          WAIT_FOR_COMPLETION: ${{ inputs.wait-for-completion }}
+          TIMEOUT_SECONDS: ${{ inputs.timeout-seconds }}
+          POLL_INTERVAL_SECONDS: ${{ inputs.poll-interval-seconds }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          base_url = os.environ["COOLIFY_URL"].rstrip("/") + "/api/v1"
+          token = os.environ["COOLIFY_TOKEN"]
+          service_uuid = os.environ["SERVICE_UUID"]
+          compose_file = Path(os.environ["COMPOSE_FILE"])
+          env_json = os.environ["ENV_JSON"].strip()
+          force_rebuild = os.environ["FORCE_REBUILD"].lower() == "true"
+          wait_for_completion = os.environ["WAIT_FOR_COMPLETION"].lower() == "true"
+          timeout_seconds = int(float(os.environ["TIMEOUT_SECONDS"]))
+          poll_interval_seconds = int(float(os.environ["POLL_INTERVAL_SECONDS"]))
+          github_output = os.environ["GITHUB_OUTPUT"]
+          github_step_summary = os.environ["GITHUB_STEP_SUMMARY"]
+
+          if not compose_file.exists():
+              print(f"Compose file not found: {compose_file}", file=sys.stderr)
+              sys.exit(1)
+
+          compose_raw = compose_file.read_text(encoding="utf-8")
+          if not compose_raw.strip():
+              print(f"Compose file is empty: {compose_file}", file=sys.stderr)
+              sys.exit(1)
+
+          default_headers = {
+              "Accept": "application/json",
+              "Authorization": f"Bearer {token}",
+          }
+
+          def api_request(method: str, path: str, *, query=None, payload=None):
+              url = base_url + path
+              if query:
+                  url += "?" + urllib.parse.urlencode(query)
+
+              headers = dict(default_headers)
+              data = None
+
+              if payload is not None:
+                  headers["Content-Type"] = "application/json"
+                  data = json.dumps(payload).encode("utf-8")
+
+              request = urllib.request.Request(url, data=data, headers=headers, method=method)
+
+              try:
+                  with urllib.request.urlopen(request, timeout=60) as response:
+                      return response.read().decode("utf-8")
+              except urllib.error.HTTPError as exc:
+                  body = exc.read().decode("utf-8")
+                  print(f"{method} {url} failed with HTTP {exc.code}", file=sys.stderr)
+                  if body:
+                      print(body, file=sys.stderr)
+                  sys.exit(1)
+              except urllib.error.URLError as exc:
+                  print(f"{method} {url} failed: {exc}", file=sys.stderr)
+                  sys.exit(1)
+
+          def write_outputs(deployment_uuid: str, deployment_url: str):
+              with open(github_output, "a", encoding="utf-8") as handle:
+                  handle.write(f"deployment_uuid={deployment_uuid}\n")
+                  handle.write(f"deployment_url={deployment_url}\n")
+
+          def write_summary(lines):
+              with open(github_step_summary, "a", encoding="utf-8") as handle:
+                  handle.write("\n".join(lines) + "\n")
+
+          def normalize_env_payload(raw: str):
+              if not raw:
+                  return []
+
+              try:
+                  parsed = json.loads(raw)
+              except json.JSONDecodeError as exc:
+                  print(f"Invalid env-json payload: {exc}", file=sys.stderr)
+                  sys.exit(1)
+
+              if isinstance(parsed, dict):
+                  return [
+                      {
+                          "key": key,
+                          "value": "" if value is None else str(value),
+                          "is_literal": True,
+                      }
+                      for key, value in parsed.items()
+                  ]
+
+              if isinstance(parsed, list):
+                  normalized = []
+                  for item in parsed:
+                      if not isinstance(item, dict) or "key" not in item:
+                          print("env-json array items must be objects containing at least a 'key' field.", file=sys.stderr)
+                          sys.exit(1)
+                      normalized.append(
+                          {
+                              "key": str(item["key"]),
+                              "value": "" if item.get("value") is None else str(item.get("value")),
+                              "is_preview": bool(item.get("is_preview", False)),
+                              "is_literal": bool(item.get("is_literal", True)),
+                              "is_multiline": bool(item.get("is_multiline", False)),
+                              "is_shown_once": bool(item.get("is_shown_once", False)),
+                          }
+                      )
+                  return normalized
+
+              print("env-json must be either a JSON object or an array of env objects.", file=sys.stderr)
+              sys.exit(1)
+
+          env_payload = normalize_env_payload(env_json)
+
+          print(f"Updating Coolify service {service_uuid} with compose file {compose_file}")
+          api_request(
+              "PATCH",
+              f"/services/{service_uuid}",
+              payload={"docker_compose_raw": compose_raw},
+          )
+
+          if env_payload:
+              print(f"Updating {len(env_payload)} Coolify service env var(s)")
+              api_request(
+                  "PATCH",
+                  f"/services/{service_uuid}/envs/bulk",
+                  payload={"data": env_payload},
+              )
+
+          print(f"Triggering deployment for service {service_uuid}")
+          trigger_raw = api_request(
+              "GET",
+              "/deploy",
+              query={
+                  "uuid": service_uuid,
+                  "force": "true" if force_rebuild else "false",
+              },
+          )
+          trigger_data = json.loads(trigger_raw)
+          deployments = trigger_data.get("deployments") or []
+          if not deployments:
+              print("Coolify did not return a deployment UUID.", file=sys.stderr)
+              print(trigger_raw, file=sys.stderr)
+              sys.exit(1)
+
+          deployment_uuid = str(deployments[0].get("deployment_uuid") or "")
+          if not deployment_uuid:
+              print("Coolify returned an empty deployment UUID.", file=sys.stderr)
+              print(trigger_raw, file=sys.stderr)
+              sys.exit(1)
+
+          if not wait_for_completion:
+              write_outputs(deployment_uuid, "")
+              summary_lines = [
+                  "### Coolify service deployment triggered",
+                  "",
+                  f"- Service UUID: `{service_uuid}`",
+                  f"- Compose file: `{compose_file}`",
+                  f"- Deployment UUID: `{deployment_uuid}`",
+                  "- Status: `triggered`",
+              ]
+              if env_payload:
+                  summary_lines.append(f"- Updated env vars: `{', '.join(item['key'] for item in env_payload)}`")
+              write_summary(summary_lines)
+              sys.exit(0)
+
+          success_statuses = {
+              "finished",
+              "success",
+              "succeeded",
+              "completed",
+              "complete",
+              "done",
+              "healthy",
+          }
+          failure_markers = ("fail", "error", "cancel", "unhealthy")
+          deadline = time.time() + timeout_seconds
+          deployment_url = ""
+          last_status = ""
+          last_logs = ""
+
+          while True:
+              deployment_raw = api_request("GET", f"/deployments/{deployment_uuid}")
+              deployment = json.loads(deployment_raw)
+              last_status = str(deployment.get("status") or "").strip()
+              last_logs = str(deployment.get("logs") or "")
+              deployment_url = str(deployment.get("deployment_url") or "")
+              normalized = last_status.lower()
+
+              print(f"Deployment {deployment_uuid} status: {last_status or '<empty>'}")
+
+              if normalized in success_statuses:
+                  write_outputs(deployment_uuid, deployment_url)
+                  summary_lines = [
+                      "### Coolify service deployment finished",
+                      "",
+                      f"- Service UUID: `{service_uuid}`",
+                      f"- Compose file: `{compose_file}`",
+                      f"- Deployment UUID: `{deployment_uuid}`",
+                      f"- Status: `{last_status}`",
+                  ]
+                  if env_payload:
+                      summary_lines.append(f"- Updated env vars: `{', '.join(item['key'] for item in env_payload)}`")
+                  if deployment_url:
+                      summary_lines.append(f"- Deployment URL: {deployment_url}")
+                  write_summary(summary_lines)
+                  sys.exit(0)
+
+              if any(marker in normalized for marker in failure_markers):
+                  print(f"Deployment failed with status: {last_status}", file=sys.stderr)
+                  if last_logs:
+                      print(last_logs, file=sys.stderr)
+                  sys.exit(1)
+
+              if time.time() >= deadline:
+                  print(
+                      f"Timed out after {timeout_seconds}s waiting for deployment {deployment_uuid}. "
+                      f"Last status: {last_status or '<empty>'}",
+                      file=sys.stderr,
+                  )
+                  if last_logs:
+                      print(last_logs, file=sys.stderr)
+                  sys.exit(1)
+
+              time.sleep(poll_interval_seconds)
+          PY
