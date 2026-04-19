@@ -1,0 +1,20 @@
+name: Deploy production
+
+on:
+  release:
+    types:
+      - published
+
+jobs:
+  deploy:
+    permissions:
+      contents: read
+    uses: Te4g/workflows/.github/workflows/deploy-coolify.yml@main
+    with:
+      coolify-url: ${{ vars.COOLIFY_URL }}
+      service-uuid: ${{ vars.COOLIFY_SERVICE_UUID_PRODUCTION }}
+      compose-file: deploy/compose.coolify.yml
+      env-json: >-
+        {"API_IMAGE":"ghcr.io/${{ github.repository_owner }}/my-api","API_IMAGE_TAG":"${{ github.event.release.tag_name }}"}
+    secrets:
+      coolify-token: ${{ secrets.COOLIFY_TOKEN }}
