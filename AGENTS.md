@@ -10,8 +10,8 @@ Whenever you add, remove, rename, move, or modify a workflow file under:
 
 you must update:
 
-- [README.md](/Users/teag/Dev/workflows/README.md)
-- the matching docs directory under `/Users/teag/Dev/workflows/docs/<workflow-name>/`
+- [README.md](README.md)
+- the matching docs directory under `docs/<workflow-name>/`
 
 in the same change.
 

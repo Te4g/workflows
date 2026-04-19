@@ -1,6 +1,6 @@
 # Reusable GitHub Actions Workflows
 
-This repository exposes callable reusable workflows from [`.github/workflows/`](/Users/teag/Dev/workflows/.github/workflows).
+This repository exposes callable reusable workflows from [`.github/workflows/`](.github/workflows/).
 
 Workflow-specific documentation lives under `docs/<workflow-name>/`.
 
