@@ -59,6 +59,10 @@ The caller job should grant:
 
 - [push.example.yml](push.example.yml)
 - [release.example.yml](release.example.yml)
+- [Build, then deploy a release to a VPS](../deploy-vps-compose/release.example.yml)
+  - calls this workflow first
+  - passes its `image_name` and `image_tag` outputs to
+    `deploy-vps-compose.yml` through a dependent `deploy` job
 
 ## Notes
 
