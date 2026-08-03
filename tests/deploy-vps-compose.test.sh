@@ -33,10 +33,30 @@ if [[ "$*" == *"docker login"* ]]; then
   [[ "$token" == "$EXPECTED_GHCR_TOKEN" ]]
   printf 'ghcr-token-via-stdin\n' >>"$COMMAND_LOG"
 fi
-if [[ "$*" == *"config --images"* ]] \
-  && [[ ${SSH_CONFIG_RESULT:-resolved} == "missing-tag" ]]; then
-  echo "Resolved Compose images do not use the requested image tag." >&2
-  exit 1
+if [[ "$*" == *"config --images"* ]]; then
+  case ${SSH_CONFIG_RESULT:-resolved} in
+    missing-tag)
+      echo "Resolved Compose images do not use the requested image tag." >&2
+      exit 1
+      ;;
+    mixed-application-latest)
+      [[ "$*" == *"matching_images="* ]] \
+        && [[ "$*" == *"awk -v prefix="* ]] || exit 0
+      printf '%s\\n' "ghcr.io/example/app:v1.2.3" "ghcr.io/example/app:latest" "postgres:16"
+      echo "Application images matching application-image-prefix must use the requested image tag." >&2
+      exit 1
+      ;;
+    no-matching-application)
+      [[ "$*" == *"matching_images="* ]] \
+        && [[ "$*" == *"awk -v prefix="* ]] || exit 0
+      printf '%s\\n' "postgres:16"
+      echo "No resolved Compose image matches application-image-prefix." >&2
+      exit 1
+      ;;
+    resolved)
+      printf '%s\\n' "ghcr.io/example/app:v1.2.3" "postgres:16"
+      ;;
+  esac
 fi
 if [[ "$*" == *"--wait-timeout"* ]]; then
   case ${SSH_DEPLOY_RESULT:-healthy} in
@@ -70,6 +90,10 @@ services:
     image: ghcr.io/example/app:${IMAGE_TAG:?IMAGE_TAG is required}
     healthcheck:
       test: ["CMD", "true"]
+  database:
+    image: postgres:16
+    healthcheck:
+      test: ["CMD", "true"]
 YAML
 }
 run_deploy() {
@@ -83,6 +107,7 @@ run_deploy() {
       COMMAND_LOG="$TMP_DIR/commands.log" \
       EXPECTED_GHCR_TOKEN="test-token" \
       INPUT_IMAGE_TAG="v1.2.3" \
+      INPUT_APPLICATION_IMAGE_PREFIX="ghcr.io/example/app" \
       INPUT_DEPLOY_PATH="/srv/compose/example" \
       INPUT_HEALTH_TIMEOUT_SECONDS="300" \
       DEPLOY_HOST="vps.example.com" \
@@ -123,6 +148,7 @@ YAML
 assert_failure missing-image-tag "compose.prod.yaml must use IMAGE_TAG in an image reference."
 write_valid_compose
 assert_failure invalid-tag "Invalid image tag" INPUT_IMAGE_TAG="release/v1"
+assert_failure invalid-application-image-prefix "application-image-prefix contains unsupported characters." INPUT_APPLICATION_IMAGE_PREFIX="ghcr.io/example/app;whoami"
 assert_failure invalid-path "Invalid deployment path" INPUT_DEPLOY_PATH="/srv/../root"
 assert_failure invalid-timeout "health-timeout-seconds must be an integer between 1 and 3600." INPUT_HEALTH_TIMEOUT_SECONDS="0"
 assert_failure invalid-port "DEPLOY_PORT must be an integer between 1 and 65535." DEPLOY_PORT="invalid"
@@ -154,6 +180,8 @@ deploy_line=$(line_number "--wait-timeout 300")
 (( login_line < deploy_line ))
 write_valid_compose
 assert_failure unresolved-image-tag "Resolved Compose images do not use the requested image tag." SSH_CONFIG_RESULT="missing-tag"
+assert_failure mixed-application-image "Application images matching application-image-prefix must use the requested image tag." SSH_CONFIG_RESULT="mixed-application-latest"
+assert_failure no-matching-application-image "No resolved Compose image matches application-image-prefix." SSH_CONFIG_RESULT="no-matching-application"
 assert_failure unhealthy-container "app|running|unhealthy" SSH_DEPLOY_RESULT="unhealthy"
 assert_failure missing-healthcheck "app|running|" SSH_DEPLOY_RESULT="missing-healthcheck"
 if grep -F "StrictHostKeyChecking=no" "$WORKFLOW_PATH" >/dev/null; then
@@ -164,9 +192,14 @@ grep -F -- "--password-stdin" "$WORKFLOW_PATH" >/dev/null
 grep -F 'docker_config=\$(mktemp -d)' "$WORKFLOW_PATH" >/dev/null
 grep -F 'rm -rf \"\$docker_config\"' "$WORKFLOW_PATH" >/dev/null
 grep -F "running\\|healthy" "$WORKFLOW_PATH" >/dev/null
+grep -F "application-image-prefix" "$WORKFLOW_PATH" >/dev/null
+grep -F "INPUT_APPLICATION_IMAGE_PREFIX" "$WORKFLOW_PATH" >/dev/null
+grep -F "No resolved Compose image matches application-image-prefix." "$WORKFLOW_PATH" >/dev/null
+grep -F "Application images matching application-image-prefix must use the requested image tag." "$WORKFLOW_PATH" >/dev/null
 [[ -f "$DOC_PATH" ]]
 [[ -f "$EXAMPLE_PATH" ]]
 grep -F "deploy-vps-compose" "$ROOT_DIR/README.md" >/dev/null
 grep -F "needs: build" "$EXAMPLE_PATH" >/dev/null
 grep -F 'needs.build.outputs.image_tag' "$EXAMPLE_PATH" >/dev/null
+grep -F 'needs.build.outputs.image_name' "$EXAMPLE_PATH" >/dev/null
 printf 'ok\n'

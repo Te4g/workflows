@@ -22,6 +22,7 @@ jobs:
     uses: Te4g/workflows/.github/workflows/deploy-vps-compose.yml@main
     with:
       image-tag: ${{ needs.build.outputs.image_tag }}
+      application-image-prefix: ${{ needs.build.outputs.image_name }}
       deploy-path: /srv/compose/my-app
       health-timeout-seconds: 300
     secrets:

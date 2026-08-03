@@ -8,12 +8,15 @@ Te4g/workflows/.github/workflows/deploy-vps-compose.yml@ref
 
 ## Purpose
 
-Deploy a release-tagged, repository-owned Compose stack to a VPS. The workflow copies only the caller's root `compose.prod.yaml`, authenticates temporarily to GHCR, pulls the requested image, deploys the stack, waits, and validates that every reported container is `running|healthy`.
+Deploy a release-tagged, repository-owned Compose stack to a VPS. The workflow copies only the caller's root `compose.prod.yaml`, validates every application image selected by `application-image-prefix`, authenticates temporarily to GHCR, pulls the requested images, deploys the stack, waits, and validates that every reported container is `running|healthy`.
 
 ## Inputs
 
 - `image-tag` (required)
   - Immutable Docker image tag to deploy. It must be 1-128 characters and use only `A-Z`, `a-z`, `0-9`, `_`, `.`, or `-`.
+- `application-image-prefix` (required)
+  - GHCR application image repository prefix. Every resolved image beginning with this prefix must end exactly with `:<image-tag>`, and at least one resolved image must match.
+  - It must be a lowercase `ghcr.io/` repository path without a tag, whitespace, or shell metacharacters; for example `ghcr.io/example/app`.
 - `deploy-path` (optional)
   - Absolute VPS deployment directory.
   - Default: `/srv/compose/<repository-name>`.
@@ -40,7 +43,8 @@ This workflow has no callable outputs. Its job summary records the deployed tag,
 ## Repository requirements
 
 - The caller repository must have a non-empty root `compose.prod.yaml`.
-- Every image reference must interpolate `IMAGE_TAG`, for example `image: ghcr.io/example/app:${IMAGE_TAG}`.
+- At least one application image reference must interpolate `IMAGE_TAG`, for example `image: ghcr.io/example/app:${IMAGE_TAG}`.
+- Every resolved application image whose reference begins with `application-image-prefix` must end with the supplied release tag. Fixed infrastructure images such as `postgres:16` and `redis:7` are allowed when they do not match that prefix.
 - Every persistent service must define a health check; the workflow requires each Compose row to be exactly `running|healthy`.
 - One-shot jobs must run separately, or remain behind a profile that is inactive during production deployment.
 
@@ -55,7 +59,7 @@ This workflow has no callable outputs. Its job summary records the deployed tag,
 
 The workflow uses pinned known hosts and never disables SSH host verification. GHCR authentication uses a temporary remote Docker configuration that is deleted when the pull command exits; the token is passed over SSH standard input.
 
-It validates the resolved image tag before logging in, preserves the uploaded `compose.prod.yaml` on a health failure, and does not run `docker compose down` or attempt rollback. To roll back, invoke the workflow again with the previous image tag after confirming that tag is available.
+It validates the resolved application image tags before logging in, preserving the uploaded `compose.prod.yaml` on a health failure, and does not run `docker compose down` or attempt rollback. To roll back, invoke the workflow again with the previous image tag after confirming that tag is available.
 
 ## Example
 
