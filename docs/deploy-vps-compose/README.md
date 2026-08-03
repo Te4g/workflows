@@ -65,6 +65,20 @@ Deployments for one caller repository are serialized, including when their
 `deploy-path` values differ. This conservative boundary ensures an omitted
 path and its explicit default can never deploy concurrently.
 
-## Example
+## Build and deploy on a GitHub release
 
-- [release.example.yml](release.example.yml)
+Use [release.example.yml](release.example.yml) as a caller workflow in the
+application repository, for example as
+`.github/workflows/release-production.yml`.
+
+The example keeps both reusable workflows in one release pipeline:
+
+1. A published GitHub release calls `docker-build-publish-ghcr.yml` with the
+   release tag.
+2. The `deploy` job declares `needs: build`, so it starts only after the image
+   has been published successfully.
+3. Deployment consumes the build job's immutable `image_tag` and `image_name`
+   outputs, then deploys that exact application image to the VPS.
+
+The application repository still owns `compose.prod.yaml` and all deployment
+secrets used by the caller workflow.
