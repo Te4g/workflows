@@ -1,0 +1,208 @@
+name: Deploy VPS Compose
+on:
+  workflow_call:
+    inputs:
+      image-tag:
+        description: "Immutable Docker image tag to deploy"
+        required: true
+        type: string
+      deploy-path:
+        description: "Absolute deployment directory; defaults to /srv/compose/<repository-name>"
+        required: false
+        type: string
+        default: ""
+      health-timeout-seconds:
+        description: "Maximum time to wait for all containers to become healthy"
+        required: false
+        type: number
+        default: 300
+    secrets:
+      DEPLOY_HOST:
+        required: true
+      DEPLOY_PORT:
+        required: false
+      DEPLOY_USER:
+        required: true
+      DEPLOY_KEY:
+        required: true
+      DEPLOY_KNOWN_HOSTS:
+        required: true
+      GHCR_USERNAME:
+        required: true
+      GHCR_TOKEN:
+        required: true
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-vps-compose-${{ github.repository }}-${{ inputs.deploy-path || 'default' }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+      - name: Deploy Compose stack
+        id: deploy
+        shell: bash
+        env:
+          INPUT_IMAGE_TAG: ${{ inputs.image-tag }}
+          INPUT_DEPLOY_PATH: ${{ inputs.deploy-path }}
+          INPUT_HEALTH_TIMEOUT_SECONDS: ${{ inputs.health-timeout-seconds }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: |
+          set -euo pipefail
+          compose_file="compose.prod.yaml"
+          repository_name=${GITHUB_REPOSITORY##*/}
+          deploy_path=${INPUT_DEPLOY_PATH:-"/srv/compose/$repository_name"}
+          deploy_port=${DEPLOY_PORT:-22}
+          health_timeout=$INPUT_HEALTH_TIMEOUT_SECONDS
+          image_tag=$INPUT_IMAGE_TAG
+          [[ -f "$compose_file" ]] || {
+            echo "compose.prod.yaml is required at repository root." >&2
+            exit 1
+          }
+          [[ -s "$compose_file" ]] || {
+            echo "compose.prod.yaml must be non-empty." >&2
+            exit 1
+          }
+          grep -Eq '^[[:space:]]*image:[[:space:]].*\${IMAGE_TAG([}:])' "$compose_file" || {
+            echo "compose.prod.yaml must use IMAGE_TAG in an image reference." >&2
+            exit 1
+          }
+          [[ "$image_tag" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || {
+            echo "Invalid image tag: $image_tag" >&2
+            exit 1
+          }
+          [[ "$deploy_path" =~ ^/[A-Za-z0-9._/-]+$ ]] \
+            && [[ "$deploy_path" != *"//"* ]] \
+            && [[ "/$deploy_path/" != *"/../"* ]] \
+            && [[ "/$deploy_path/" != *"/./"* ]] || {
+            echo "Invalid deployment path: $deploy_path" >&2
+            exit 1
+          }
+          [[ "$health_timeout" =~ ^[0-9]+$ ]] \
+            && (( health_timeout >= 1 && health_timeout <= 3600 )) || {
+            echo "health-timeout-seconds must be an integer between 1 and 3600." >&2
+            exit 1
+          }
+          [[ "$deploy_port" =~ ^[0-9]+$ ]] \
+            && (( deploy_port >= 1 && deploy_port <= 65535 )) || {
+            echo "DEPLOY_PORT must be an integer between 1 and 65535." >&2
+            exit 1
+          }
+          [[ "$DEPLOY_HOST" =~ ^([A-Za-z0-9.-]+|[A-Fa-f0-9:]+)$ ]] || {
+            echo "DEPLOY_HOST contains unsupported characters." >&2
+            exit 1
+          }
+          [[ "$DEPLOY_USER" =~ ^[A-Za-z_][A-Za-z0-9_.-]*$ ]] || {
+            echo "DEPLOY_USER contains unsupported characters." >&2
+            exit 1
+          }
+          [[ "$GHCR_USERNAME" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || {
+            echo "GHCR_USERNAME contains unsupported characters." >&2
+            exit 1
+          }
+          ssh_dir="$HOME/.ssh"
+          key_file="$ssh_dir/deploy_key"
+          known_hosts_file="$ssh_dir/known_hosts"
+          install -d -m 700 "$ssh_dir"
+          printf '%s\n' "$DEPLOY_KEY" >"$key_file"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" >"$known_hosts_file"
+          chmod 600 "$key_file" "$known_hosts_file"
+          ssh_options=(
+            -i "$key_file"
+            -p "$deploy_port"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$known_hosts_file"
+          )
+          remote="$DEPLOY_USER@$DEPLOY_HOST"
+          scp_options=(
+            -i "$key_file"
+            -P "$deploy_port"
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$known_hosts_file"
+          )
+          scp_host=$DEPLOY_HOST
+          if [[ "$scp_host" == *:* ]]; then
+            scp_host="[$scp_host]"
+          fi
+          temporary_name=".compose.prod.yaml.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}.tmp"
+          temporary_path="$deploy_path/$temporary_name"
+          cleanup_remote() {
+            ssh "${ssh_options[@]}" "$remote" "rm -f '$temporary_path'" >/dev/null 2>&1 || true
+          }
+          trap cleanup_remote EXIT
+          ssh "${ssh_options[@]}" "$remote" \
+            "set -eu
+             command -v docker >/dev/null
+             docker compose version >/dev/null
+             mkdir -p '$deploy_path'"
+          scp "${scp_options[@]}" -- "$compose_file" \
+            "${DEPLOY_USER}@${scp_host}:${temporary_path}"
+          image_tag_regex=${image_tag//./\\.}
+          ssh "${ssh_options[@]}" "$remote" \
+            "set -eu
+             cd '$deploy_path'
+             IMAGE_TAG='$image_tag' docker compose -f '$temporary_name' config --quiet
+             if ! IMAGE_TAG='$image_tag' docker compose -f '$temporary_name' config --images \
+               | grep -Eq ':${image_tag_regex}$'; then
+               echo 'Resolved Compose images do not use the requested image tag.' >&2
+               exit 1
+             fi"
+          printf '%s' "$GHCR_TOKEN" | ssh "${ssh_options[@]}" "$remote" \
+            "set -eu
+             cd '$deploy_path'
+             docker_config=\$(mktemp -d)
+             trap 'rm -rf \"\$docker_config\"' EXIT HUP INT TERM
+             DOCKER_CONFIG=\"\$docker_config\" docker login ghcr.io \
+               --username '$GHCR_USERNAME' --password-stdin >/dev/null
+             IMAGE_TAG='$image_tag' DOCKER_CONFIG=\"\$docker_config\" \
+               docker compose -f '$temporary_name' pull"
+          status_file=$(mktemp)
+          set +e
+          ssh "${ssh_options[@]}" "$remote" \
+            "set -u
+             cd '$deploy_path'
+             mv '$temporary_name' compose.prod.yaml
+             export IMAGE_TAG='$image_tag'
+             up_status=0
+             docker compose -f compose.prod.yaml up --detach --remove-orphans \
+               --wait --wait-timeout $health_timeout || up_status=\$?
+             docker compose -f compose.prod.yaml ps --all
+             health_rows=\$(docker compose -f compose.prod.yaml ps --all \
+               --format '{{.Name}}|{{.State}}|{{.Health}}')
+             printf '%s\n' \"\$health_rows\" | sed 's/^/HEALTH|/'
+             invalid_rows=\$(printf '%s\n' \"\$health_rows\" \
+               | grep -Ev '^[^|]+\|running\|healthy$' || true)
+             if [ \"\$up_status\" -ne 0 ] || [ -z \"\$health_rows\" ] \
+               || [ -n \"\$invalid_rows\" ]; then
+               exit 1
+             fi" 2>&1 | tee "$status_file"
+          deploy_status=${PIPESTATUS[0]}
+          set -e
+          {
+            echo "### VPS Compose deployment"
+            echo
+            echo "- Repository: \`$GITHUB_REPOSITORY\`"
+            echo "- Image tag: \`$image_tag\`"
+            echo "- Destination: \`$DEPLOY_HOST:$deploy_path\`"
+            echo "- Status: \`$([[ $deploy_status -eq 0 ]] && echo healthy || echo failed)\`"
+            echo
+            echo "#### Container health"
+            echo
+            echo '\`\`\`text'
+            sed -n 's/^HEALTH|//p' "$status_file"
+            echo '\`\`\`'
+          } >>"$GITHUB_STEP_SUMMARY"
+          exit "$deploy_status"
