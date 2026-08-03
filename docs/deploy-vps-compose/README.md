@@ -43,7 +43,7 @@ This workflow has no callable outputs. Its job summary records the deployed tag,
 ## Repository requirements
 
 - The caller repository must have a non-empty root `compose.prod.yaml`.
-- At least one application image reference must interpolate `IMAGE_TAG`, for example `image: ghcr.io/example/app:${IMAGE_TAG}`.
+- Every application image reference whose image starts with `application-image-prefix` must use the required form `:${IMAGE_TAG:?IMAGE_TAG is required}`; optional `IMAGE_TAG` interpolation and hard-coded release tags are rejected.
 - Every resolved application image whose reference begins with `application-image-prefix` must end with the supplied release tag. Fixed infrastructure images such as `postgres:16` and `redis:7` are allowed when they do not match that prefix.
 - Every persistent service must define a health check; the workflow requires each Compose row to be exactly `running|healthy`.
 - One-shot jobs must run separately, or remain behind a profile that is inactive during production deployment.
@@ -60,6 +60,10 @@ This workflow has no callable outputs. Its job summary records the deployed tag,
 The workflow uses pinned known hosts and never disables SSH host verification. GHCR authentication uses a temporary remote Docker configuration that is deleted when the pull command exits; the token is passed over SSH standard input.
 
 It validates the resolved application image tags before logging in, preserving the uploaded `compose.prod.yaml` on a health failure, and does not run `docker compose down` or attempt rollback. To roll back, invoke the workflow again with the previous image tag after confirming that tag is available.
+
+Deployments for one caller repository are serialized, including when their
+`deploy-path` values differ. This conservative boundary ensures an omitted
+path and its explicit default can never deploy concurrently.
 
 ## Example
 

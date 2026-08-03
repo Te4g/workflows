@@ -126,7 +126,7 @@ jobs:
 ## Application Compose Contract
 
 The caller repository must contain a non-empty `/compose.prod.yaml`. The file
-must contain `${IMAGE_TAG` and use a required interpolation expression for each
+must use the required `:${IMAGE_TAG:?…}` interpolation form for every
 application image whose reference begins with `application-image-prefix`:
 
 ```yaml
@@ -152,7 +152,8 @@ The prefix selects application images only. Fixed infrastructure images, such
 as `postgres:16` or `redis:7`, are allowed when they do not begin with the
 application image prefix. The resolved Compose stack must contain at least one
 image matching the prefix, and every matching image must end in the requested
-release tag.
+release tag. Optional `${IMAGE_TAG}` interpolation and hard-coded current
+release tags do not meet the application image contract.
 
 Compose interpolation happens at command execution time. The workflow does not
 rewrite the Compose file or persist the image tag in it.
@@ -165,8 +166,9 @@ does not create them.
 ## Deployment Flow
 
 1. Check out the caller repository at the release commit.
-2. Validate that `compose.prod.yaml` exists, is non-empty, and contains
-   `${IMAGE_TAG`.
+2. Validate that `compose.prod.yaml` exists, is non-empty, and that every
+   application image selected by `application-image-prefix` uses the required
+   `:${IMAGE_TAG:?…}` interpolation form.
 3. Validate `image-tag` against Docker tag syntax and
    `application-image-prefix` as a lowercase GHCR repository path. Reject
    empty values, shell metacharacters, slashes in the tag, tags longer than 128
@@ -203,9 +205,10 @@ does not create them.
 14. Write the deployed tag, destination, Compose service status, and individual
     container health states to the job summary.
 
-Deployments targeting the same caller repository and deployment path must not
-run concurrently. The workflow uses GitHub Actions concurrency with
-`cancel-in-progress: false` to prevent simultaneous updates.
+Deployments targeting the same caller repository are serialized even when
+`deploy-path` differs. The workflow uses this conservative GitHub Actions
+concurrency boundary with `cancel-in-progress: false` so an omitted path and
+its explicitly supplied default can never deploy concurrently.
 
 ## Security
 
@@ -250,7 +253,8 @@ Implementation verification covers:
 - the exact input, secret, and default-value contract;
 - a valid root Compose file and release tag path;
 - rejection of a missing or empty Compose file;
-- rejection of a missing `${IMAGE_TAG` placeholder;
+- rejection of optional, missing, or hard-coded `IMAGE_TAG` application image
+  references;
 - acceptance of a tagged application image plus fixed Postgres infrastructure;
 - rejection when no resolved image matches `application-image-prefix`;
 - rejection when a matching application image uses `:latest` instead of the
@@ -260,17 +264,19 @@ Implementation verification covers:
 - strict SSH host verification;
 - GHCR password delivery through standard input and temporary credential
   cleanup;
-- command ordering: validate, authenticate, pull, install Compose file, start,
-  wait, inspect, summarize;
+- command ordering: validate, authenticate, pull, atomically install the
+  Compose file, start, wait, inspect, summarize;
+- atomic rename failure stops before `docker compose up`;
 - failed health validation for unhealthy containers and containers without a
   Docker health check;
 - the release example's `needs: build` dependency and use of
   `needs.build.outputs.image_tag`.
 
-The checks should remain local and deterministic where possible. SSH, SCP, and
-Docker commands are represented by stubs in focused shell tests rather than
-connecting to a real VPS. A live deployment remains a separate integration
-validation using a test VPS and test package.
+The checks remain local and deterministic. SSH and SCP stubs execute the
+generated remote shell commands in a temporary absolute deployment directory
+against a fake Docker/Compose command, rather than connecting to a real VPS. A
+live deployment remains a separate integration validation using a test VPS and
+test package.
 
 ## Documentation Changes
 

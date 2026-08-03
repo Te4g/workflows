@@ -39,7 +39,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     concurrency:
-      group: deploy-vps-compose-${{ github.repository }}-${{ inputs.deploy-path || 'default' }}
+      group: deploy-vps-compose-${{ github.repository }}
       cancel-in-progress: false
     steps:
       - name: Checkout caller repository
@@ -79,16 +79,28 @@ jobs:
             echo "compose.prod.yaml must be non-empty." >&2
             exit 1
           }
-          grep -Eq '^[[:space:]]*image:[[:space:]].*\${IMAGE_TAG([}:])' "$compose_file" || {
-            echo "compose.prod.yaml must use IMAGE_TAG in an image reference." >&2
-            exit 1
-          }
-          [[ "$image_tag" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || {
-            echo "Invalid image tag: $image_tag" >&2
-            exit 1
-          }
           [[ "$application_image_prefix" =~ ^ghcr\.io/[a-z0-9]([a-z0-9._-]*[a-z0-9])?(/[a-z0-9]([a-z0-9._-]*[a-z0-9])?)*$ ]] || {
             echo "application-image-prefix contains unsupported characters." >&2
+            exit 1
+          }
+          if ! awk -v prefix="$application_image_prefix" '
+            /^[[:space:]]*image:[[:space:]]*/ {
+              image = $0
+              sub(/^[[:space:]]*image:[[:space:]]*/, "", image)
+              if (index(image, prefix) == 1) {
+                found = 1
+                if (image !~ ("^" prefix ":\\$\\{IMAGE_TAG:\\?[^}]+\\}$")) {
+                  invalid = 1
+                }
+              }
+            }
+            END { exit (!found || invalid) }
+          ' "$compose_file"; then
+            echo "Every application image must use required IMAGE_TAG interpolation." >&2
+            exit 1
+          fi
+          [[ "$image_tag" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || {
+            echo "Invalid image tag: $image_tag" >&2
             exit 1
           }
           [[ "$deploy_path" =~ ^/[A-Za-z0-9._/-]+$ ]] \
@@ -188,7 +200,7 @@ jobs:
           status_file=$(mktemp)
           set +e
           ssh "${ssh_options[@]}" "$remote" \
-            "set -u
+            "set -eu
              cd '$deploy_path'
              mv '$temporary_name' compose.prod.yaml
              export IMAGE_TAG='$image_tag'
@@ -217,8 +229,8 @@ jobs:
             echo
             echo "#### Container health"
             echo
-            echo '\`\`\`text'
+            printf '%s\n' "$(printf '\140\140\140')text"
             sed -n 's/^HEALTH|//p' "$status_file"
-            echo '\`\`\`'
+            printf '%s\n' "$(printf '\140\140\140')"
           } >>"$GITHUB_STEP_SUMMARY"
           exit "$deploy_status"
