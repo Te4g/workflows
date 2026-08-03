@@ -6,6 +6,10 @@ on:
         description: "Immutable Docker image tag to deploy"
         required: true
         type: string
+      application-image-prefix:
+        description: "GHCR application image repository prefix whose resolved images must use image-tag"
+        required: true
+        type: string
       deploy-path:
         description: "Absolute deployment directory; defaults to /srv/compose/<repository-name>"
         required: false
@@ -48,6 +52,7 @@ jobs:
         shell: bash
         env:
           INPUT_IMAGE_TAG: ${{ inputs.image-tag }}
+          INPUT_APPLICATION_IMAGE_PREFIX: ${{ inputs.application-image-prefix }}
           INPUT_DEPLOY_PATH: ${{ inputs.deploy-path }}
           INPUT_HEALTH_TIMEOUT_SECONDS: ${{ inputs.health-timeout-seconds }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
@@ -65,6 +70,7 @@ jobs:
           deploy_port=${DEPLOY_PORT:-22}
           health_timeout=$INPUT_HEALTH_TIMEOUT_SECONDS
           image_tag=$INPUT_IMAGE_TAG
+          application_image_prefix=$INPUT_APPLICATION_IMAGE_PREFIX
           [[ -f "$compose_file" ]] || {
             echo "compose.prod.yaml is required at repository root." >&2
             exit 1
@@ -79,6 +85,10 @@ jobs:
           }
           [[ "$image_tag" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || {
             echo "Invalid image tag: $image_tag" >&2
+            exit 1
+          }
+          [[ "$application_image_prefix" =~ ^ghcr\.io/[a-z0-9]([a-z0-9._-]*[a-z0-9])?(/[a-z0-9]([a-z0-9._-]*[a-z0-9])?)*$ ]] || {
+            echo "application-image-prefix contains unsupported characters." >&2
             exit 1
           }
           [[ "$deploy_path" =~ ^/[A-Za-z0-9._/-]+$ ]] \
@@ -155,9 +165,15 @@ jobs:
             "set -eu
              cd '$deploy_path'
              IMAGE_TAG='$image_tag' docker compose -f '$temporary_name' config --quiet
-             if ! IMAGE_TAG='$image_tag' docker compose -f '$temporary_name' config --images \
-               | grep -Eq ':${image_tag_regex}$'; then
-               echo 'Resolved Compose images do not use the requested image tag.' >&2
+             resolved_images=\$(IMAGE_TAG='$image_tag' docker compose -f '$temporary_name' config --images)
+             matching_images=\$(printf '%s\\n' \"\$resolved_images\" \
+               | awk -v prefix='$application_image_prefix' 'index(\$0, prefix) == 1 { print }')
+             if [ -z \"\$matching_images\" ]; then
+               echo 'No resolved Compose image matches application-image-prefix.' >&2
+               exit 1
+             fi
+             if printf '%s\\n' \"\$matching_images\" | grep -Ev ':${image_tag_regex}$' >/dev/null; then
+               echo 'Application images matching application-image-prefix must use the requested image tag.' >&2
                exit 1
              fi"
           printf '%s' "$GHCR_TOKEN" | ssh "${ssh_options[@]}" "$remote" \

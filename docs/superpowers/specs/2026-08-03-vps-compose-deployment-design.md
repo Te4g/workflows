@@ -42,6 +42,11 @@ Te4g/workflows/.github/workflows/deploy-vps-compose.yml@ref
 - `image-tag`
   - required string
   - immutable image tag emitted as `needs.build.outputs.image_tag`
+- `application-image-prefix`
+  - required string
+  - lowercase GHCR repository prefix emitted as `needs.build.outputs.image_name`
+  - every resolved image beginning with this prefix must end exactly with
+    `:<image-tag>`; at least one resolved image must match
 - `deploy-path`
   - optional string
   - when empty, the workflow uses `/srv/compose/<repository-name>`
@@ -105,6 +110,7 @@ jobs:
     uses: Te4g/workflows/.github/workflows/deploy-vps-compose.yml@main
     with:
       image-tag: ${{ needs.build.outputs.image_tag }}
+      application-image-prefix: ${{ needs.build.outputs.image_name }}
       deploy-path: /srv/compose/my-app
       health-timeout-seconds: 300
     secrets:
@@ -121,7 +127,7 @@ jobs:
 
 The caller repository must contain a non-empty `/compose.prod.yaml`. The file
 must contain `${IMAGE_TAG` and use a required interpolation expression for each
-release-versioned image:
+application image whose reference begins with `application-image-prefix`:
 
 ```yaml
 services:
@@ -142,6 +148,12 @@ One-shot migration or initialization jobs are outside this workflow's health
 contract and must run separately or behind a Compose profile that is not active
 during the production deployment.
 
+The prefix selects application images only. Fixed infrastructure images, such
+as `postgres:16` or `redis:7`, are allowed when they do not begin with the
+application image prefix. The resolved Compose stack must contain at least one
+image matching the prefix, and every matching image must end in the requested
+release tag.
+
 Compose interpolation happens at command execution time. The workflow does not
 rewrite the Compose file or persist the image tag in it.
 
@@ -155,8 +167,10 @@ does not create them.
 1. Check out the caller repository at the release commit.
 2. Validate that `compose.prod.yaml` exists, is non-empty, and contains
    `${IMAGE_TAG`.
-3. Validate `image-tag` against Docker tag syntax. Reject empty values, shell
-   metacharacters, slashes, and values longer than 128 characters.
+3. Validate `image-tag` against Docker tag syntax and
+   `application-image-prefix` as a lowercase GHCR repository path. Reject
+   empty values, shell metacharacters, slashes in the tag, tags longer than 128
+   characters, and unsafe prefixes.
 4. Resolve the deployment path and require a normalized absolute path without
    whitespace, shell metacharacters, or `..` path segments.
 5. Require the health timeout to be an integer from `1` through `3600`, require
@@ -168,9 +182,11 @@ does not create them.
 8. Create the deployment directory and upload only `compose.prod.yaml` under a
    run-specific temporary filename.
 9. On the VPS, resolve the temporary file with `IMAGE_TAG=<image-tag>`, run
-   `docker compose config --quiet`, and confirm that at least one resolved image
-   reference uses the supplied tag. This prevents a comment or unrelated
-   environment value from satisfying the raw `${IMAGE_TAG` text check.
+   `docker compose config --quiet`, and inspect `config --images`. Fail if
+   no resolved image begins with `application-image-prefix`, or if any
+   matching application image does not end in the supplied tag. This prevents a
+   comment, unrelated environment value, or fixed infrastructure image from
+   satisfying the raw `${IMAGE_TAG` text check.
 10. Create a temporary remote Docker configuration, authenticate to `ghcr.io`
    with `docker login --password-stdin`, and pull every image in the resolved
    stack. Delete the temporary Docker configuration on exit.
@@ -201,7 +217,8 @@ run concurrently. The workflow uses GitHub Actions concurrency with
 - GHCR credentials use a temporary remote Docker configuration that is removed
   after the pull, including on failure.
 - The GHCR token needs package read access only.
-- Values interpolated into remote commands are validated and shell-quoted.
+- Values interpolated into remote commands, including the application image
+  prefix, are validated and shell-quoted.
 - The runner's SSH key material exists only for the lifetime of the job.
 - The deployment user must have narrowly scoped SSH access and non-interactive
   permission to manage this Docker host.
@@ -234,7 +251,10 @@ Implementation verification covers:
 - a valid root Compose file and release tag path;
 - rejection of a missing or empty Compose file;
 - rejection of a missing `${IMAGE_TAG` placeholder;
-- rejection when `${IMAGE_TAG` does not resolve into an image reference;
+- acceptance of a tagged application image plus fixed Postgres infrastructure;
+- rejection when no resolved image matches `application-image-prefix`;
+- rejection when a matching application image uses `:latest` instead of the
+  requested tag;
 - rejection of invalid image tags and unsafe deployment paths;
 - rejection of invalid health timeouts, SSH ports, and SSH addressing values;
 - strict SSH host verification;
