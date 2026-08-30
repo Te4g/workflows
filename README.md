@@ -14,7 +14,7 @@ Workflow-specific documentation lives under `docs/<workflow-name>/`.
   - Coolify service deployment workflow for repo-owned Compose files.
 - [`deploy-vps-compose`](docs/deploy-vps-compose/README.md)
   - Callable path: `Te4g/workflows/.github/workflows/deploy-vps-compose.yml@ref`
-  - Secure VPS deployment of a release-tagged, repository-owned Compose stack with a persistent image tag and strict health validation.
+  - Secure VPS deployment or redeployment of a release-tagged, repository-owned Compose stack with an exact source ref, persistent image tag, and strict health validation.
 - [`docker-build-publish-ghcr`](docs/docker-build-publish-ghcr/README.md)
   - Callable path: `Te4g/workflows/.github/workflows/docker-build-publish-ghcr.yml@ref`
   - GHCR build and publish workflow.

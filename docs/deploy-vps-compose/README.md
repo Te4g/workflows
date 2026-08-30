@@ -17,6 +17,10 @@ Deploy a release-tagged, repository-owned Compose stack to a VPS. The workflow c
 - `application-image-prefix` (required)
   - GHCR application image repository prefix. Every resolved image beginning with this prefix must end exactly with `:<image-tag>`, and at least one resolved image must match.
   - It must be a lowercase `ghcr.io/` repository path without a tag, whitespace, or shell metacharacters; for example `ghcr.io/example/app`.
+- `source-ref` (optional)
+  - Caller repository Git ref containing the `compose.prod.yaml` to deploy.
+  - Default: the commit that triggered the caller workflow.
+  - For a manual redeployment, pass the same existing release tag used by `image-tag` so both the image and Compose contract come from that release.
 - `deploy-path` (optional)
   - Absolute VPS deployment directory.
   - Default: `/srv/compose/<repository-name>`.
@@ -85,3 +89,18 @@ The example keeps both reusable workflows in one release pipeline:
 
 The application repository still owns `compose.prod.yaml` and all deployment
 secrets used by the caller workflow.
+
+## Redeploy an existing release without rebuilding
+
+Use [redeploy.example.yml](redeploy.example.yml) as a separate caller workflow.
+It exposes a manual `release_tag` input, verifies that the GitHub release
+exists, and calls only `deploy-vps-compose.yml`; it never calls the build
+workflow. The release tag is passed as both `image-tag` and `source-ref`, so the
+existing GHCR image is deployed with the `compose.prod.yaml` stored at the same
+Git tag.
+
+Trigger it from GitHub Actions or with:
+
+```bash
+gh workflow run redeploy-production.yml -f release_tag=v1.0.0
+```

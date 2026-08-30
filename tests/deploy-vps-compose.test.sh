@@ -4,6 +4,7 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 WORKFLOW_PATH="$ROOT_DIR/.github/workflows/deploy-vps-compose.yml"
 DOC_PATH="$ROOT_DIR/docs/deploy-vps-compose/README.md"
 EXAMPLE_PATH="$ROOT_DIR/docs/deploy-vps-compose/release.example.yml"
+REDEPLOY_EXAMPLE_PATH="$ROOT_DIR/docs/deploy-vps-compose/redeploy.example.yml"
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
 [[ -f "$WORKFLOW_PATH" ]] || { echo "Missing workflow: $WORKFLOW_PATH" >&2; exit 1; }
@@ -227,11 +228,28 @@ grep -F "Application images matching application-image-prefix must use the reque
 grep -F "The deployment .env path must be a regular file." "$WORKFLOW_PATH" >/dev/null
 grep -F 'chmod 600 \"\$temporary_env\"' "$WORKFLOW_PATH" >/dev/null
 grep -F 'group: deploy-vps-compose-${{ github.repository }}' "$WORKFLOW_PATH" >/dev/null
-[[ -f "$DOC_PATH" && -f "$EXAMPLE_PATH" ]]
+grep -F 'source-ref:' "$WORKFLOW_PATH" >/dev/null
+grep -F 'ref: ${{ inputs.source-ref || github.sha }}' "$WORKFLOW_PATH" >/dev/null
+[[ -f "$DOC_PATH" && -f "$EXAMPLE_PATH" && -f "$REDEPLOY_EXAMPLE_PATH" ]]
 grep -F "deploy-vps-compose" "$ROOT_DIR/README.md" >/dev/null
 grep -F 'persistent image tag' "$ROOT_DIR/README.md" >/dev/null
 grep -F 'IMAGE_TAG=<image-tag>' "$DOC_PATH" >/dev/null
 grep -F "needs: build" "$EXAMPLE_PATH" >/dev/null
 grep -F 'needs.build.outputs.image_tag' "$EXAMPLE_PATH" >/dev/null
 grep -F 'needs.build.outputs.image_name' "$EXAMPLE_PATH" >/dev/null
+ruby - "$REDEPLOY_EXAMPLE_PATH" <<'RUBY'
+require "yaml"
+workflow = YAML.safe_load(File.read(ARGV.fetch(0)), [], [], true)
+jobs = workflow.fetch("jobs")
+abort "Manual redeploy must not define a build job." if jobs.key?("build")
+validate = jobs.fetch("validate-release")
+deploy = jobs.fetch("deploy")
+verification = validate.fetch("steps").fetch(0)
+abort "Manual redeploy must verify the release." unless verification.fetch("run").include?("gh release view")
+abort "Deploy must wait for release validation." unless deploy.fetch("needs") == "validate-release"
+abort "Manual redeploy must call only the Compose deploy workflow." unless deploy.fetch("uses") == "Te4g/workflows/.github/workflows/deploy-vps-compose.yml@main"
+abort "Release tag must select the image." unless deploy.fetch("with").fetch("image-tag") == "${{ inputs.release_tag }}"
+abort "Release tag must select the Compose source." unless deploy.fetch("with").fetch("source-ref") == "${{ inputs.release_tag }}"
+RUBY
+if grep -F 'docker-build-publish-ghcr' "$REDEPLOY_EXAMPLE_PATH" >/dev/null; then echo "Manual redeploy invokes the build workflow." >&2; exit 1; fi
 printf 'ok\n'

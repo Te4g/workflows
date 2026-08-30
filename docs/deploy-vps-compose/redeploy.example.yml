@@ -1,0 +1,46 @@
+name: Redeploy production
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing published release tag to deploy
+        required: true
+        type: string
+
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+
+jobs:
+  validate-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Verify release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+
+  deploy:
+    needs: validate-release
+    permissions:
+      contents: read
+      packages: read
+    uses: Te4g/workflows/.github/workflows/deploy-vps-compose.yml@main
+    with:
+      image-tag: ${{ inputs.release_tag }}
+      application-image-prefix: ghcr.io/te4g/my-app
+      source-ref: ${{ inputs.release_tag }}
+      deploy-path: /srv/compose/my-app
+      health-timeout-seconds: 300
+    secrets:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+      GHCR_USERNAME: ${{ github.actor }}
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}

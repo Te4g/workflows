@@ -10,6 +10,11 @@ on:
         description: "GHCR application image repository prefix whose resolved images must use image-tag"
         required: true
         type: string
+      source-ref:
+        description: "Caller repository Git ref containing the compose.prod.yaml to deploy; defaults to the triggering commit"
+        required: false
+        type: string
+        default: ""
       deploy-path:
         description: "Absolute deployment directory; defaults to /srv/compose/<repository-name>"
         required: false
@@ -46,7 +51,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository }}
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.source-ref || github.sha }}
       - name: Deploy Compose stack
         id: deploy
         shell: bash

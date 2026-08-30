@@ -47,6 +47,11 @@ Te4g/workflows/.github/workflows/deploy-vps-compose.yml@ref
   - lowercase GHCR repository prefix emitted as `needs.build.outputs.image_name`
   - every resolved image beginning with this prefix must end exactly with
     `:<image-tag>`; at least one resolved image must match
+- `source-ref`
+  - optional string
+  - caller repository Git ref containing `compose.prod.yaml`
+  - defaults to the triggering commit; manual redeployments pass the existing
+    release tag so the image and Compose contract come from the same release
 - `deploy-path`
   - optional string
   - when empty, the workflow uses `/srv/compose/<repository-name>`
@@ -168,7 +173,8 @@ does not create them.
 
 ## Deployment Flow
 
-1. Check out the caller repository at the release commit.
+1. Check out the caller repository at `source-ref`, or at the triggering commit
+   when that input is omitted.
 2. Validate that `compose.prod.yaml` exists, is non-empty, and that every
    application image selected by `application-image-prefix` uses the required
    `:${IMAGE_TAG:?…}` interpolation form.
