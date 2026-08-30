@@ -156,7 +156,10 @@ release tag. Optional `${IMAGE_TAG}` interpolation and hard-coded current
 release tags do not meet the application image contract.
 
 Compose interpolation happens at command execution time. The workflow does not
-rewrite the Compose file or persist the image tag in it.
+rewrite the Compose file. It atomically persists the selected release as the
+only active `IMAGE_TAG=` entry in `<deploy-path>/.env`, preserving every other
+entry and restricting the resulting file to mode `0600`. This keeps later bare
+Compose operations pinned to the deployed release.
 
 Because no other repository content is copied, relative `env_file`, config,
 secret, or bind-mount sources must already exist under the deployment directory
@@ -194,15 +197,18 @@ does not create them.
    stack. Delete the temporary Docker configuration on exit.
 11. Atomically rename the validated temporary Compose file to
     `<deploy-path>/compose.prod.yaml`.
-12. Start the stack and wait for it:
+12. Reject a symlink or non-regular `<deploy-path>/.env`, then atomically create
+    or update its single `IMAGE_TAG=<image-tag>` entry without changing other
+    environment values. Restrict the resulting file to mode `0600`.
+13. Start the stack and wait for it:
 
     ```text
-    IMAGE_TAG=<image-tag> docker compose -f compose.prod.yaml up --detach --remove-orphans --wait --wait-timeout <health-timeout-seconds>
+    docker compose -f compose.prod.yaml up --detach --remove-orphans --wait --wait-timeout <health-timeout-seconds>
     ```
 
-13. Inspect every active container. Require it to be running, require Docker
+14. Inspect every active container. Require it to be running, require Docker
     health state to exist, and require its health status to equal `healthy`.
-14. Write the deployed tag, destination, Compose service status, and individual
+15. Write the deployed tag, destination, Compose service status, and individual
     container health states to the job summary.
 
 Deployments targeting the same caller repository are serialized even when

@@ -8,7 +8,7 @@ Te4g/workflows/.github/workflows/deploy-vps-compose.yml@ref
 
 ## Purpose
 
-Deploy a release-tagged, repository-owned Compose stack to a VPS. The workflow copies only the caller's root `compose.prod.yaml`, validates every application image selected by `application-image-prefix`, authenticates temporarily to GHCR, pulls the requested images, deploys the stack, waits, and validates that every reported container is `running|healthy`.
+Deploy a release-tagged, repository-owned Compose stack to a VPS. The workflow copies only the caller's root `compose.prod.yaml`, validates every application image selected by `application-image-prefix`, authenticates temporarily to GHCR, pulls the requested images, persists the selected tag in the deployment directory's `.env`, deploys the stack, waits, and validates that every reported container is `running|healthy`.
 
 ## Inputs
 
@@ -45,6 +45,7 @@ This workflow has no callable outputs. Its job summary records the deployed tag,
 - The caller repository must have a non-empty root `compose.prod.yaml`.
 - Every application image reference whose image starts with `application-image-prefix` must use the required form `:${IMAGE_TAG:?IMAGE_TAG is required}`; optional `IMAGE_TAG` interpolation and hard-coded release tags are rejected.
 - Every resolved application image whose reference begins with `application-image-prefix` must end with the supplied release tag. Fixed infrastructure images such as `postgres:16` and `redis:7` are allowed when they do not match that prefix.
+- The deployment directory's `.env` path must either be absent or be a regular file. Symlinks and other file types are rejected.
 - Every persistent service must define a health check; the workflow requires each Compose row to be exactly `running|healthy`.
 - One-shot jobs must run separately, or remain behind a profile that is inactive during production deployment.
 
@@ -52,14 +53,16 @@ This workflow has no callable outputs. Its job summary records the deployed tag,
 
 - Docker Engine and Docker Compose v2 with `--wait` support.
 - Non-interactive Docker access for `DEPLOY_USER`.
-- A writable deployment directory.
+- A writable deployment directory. The workflow atomically creates or replaces `.env` there as the deployment user.
 - Any relative files and external resources needed by the Compose stack pre-provisioned on the VPS.
 
 ## Security and failure behavior
 
 The workflow uses pinned known hosts and never disables SSH host verification. GHCR authentication uses a temporary remote Docker configuration that is deleted when the pull command exits; the token is passed over SSH standard input.
 
-It validates the resolved application image tags before logging in, preserving the uploaded `compose.prod.yaml` on a health failure, and does not run `docker compose down` or attempt rollback. To roll back, invoke the workflow again with the previous image tag after confirming that tag is available.
+Immediately before `docker compose up`, the workflow atomically creates or updates exactly one `IMAGE_TAG=<image-tag>` entry in `<deploy-path>/.env`. Every other environment entry is preserved and the resulting file is restricted to mode `0600`. This lets later commands such as `docker compose -f compose.prod.yaml ps`, `logs`, and `config` resolve the same immutable image without manually exporting `IMAGE_TAG`.
+
+It validates the resolved application image tags before logging in, preserving the uploaded `compose.prod.yaml` and attempted `IMAGE_TAG` on a health failure so operators can inspect the failed stack. Failures before the Compose file is installed leave `.env` unchanged. The workflow does not run `docker compose down` or attempt rollback. To roll back, invoke it again with the previous image tag after confirming that tag is available.
 
 Deployments for one caller repository are serialized, including when their
 `deploy-path` values differ. This conservative boundary ensures an omitted

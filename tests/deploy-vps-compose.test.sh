@@ -31,9 +31,20 @@ if [[ "${1:-}" == login ]]; then
 fi
 if [[ "$*" == *"compose version"* || "$*" == *"config --quiet"* || "$*" == *" pull"* ]]; then exit 0; fi
 if [[ "$*" == *"config --images"* ]]; then printf '%s\n' "$FAKE_COMPOSE_IMAGES"; exit 0; fi
-if [[ "$*" == *" up "* ]]; then [[ ${FAKE_UP_RESULT:-healthy} == healthy ]] && exit 0 || exit 1; fi
-if [[ "$*" == *"ps --all"* && "$*" == *"--format"* ]]; then printf '%s\n' "$FAKE_HEALTH_ROWS"; exit 0; fi
-if [[ "$*" == *"ps --all"* ]]; then printf '%s\n' "$FAKE_HEALTH_ROWS"; exit 0; fi
+if [[ "$*" == *" up "* ]]; then
+  grep -Fx 'IMAGE_TAG=v1.2.3' .env >/dev/null
+  [[ ${FAKE_UP_RESULT:-healthy} == healthy ]] && exit 0 || exit 1
+fi
+if [[ "$*" == *"ps --all"* && "$*" == *"--format"* ]]; then
+  grep -Fx 'IMAGE_TAG=v1.2.3' .env >/dev/null
+  printf '%s\n' "$FAKE_HEALTH_ROWS"
+  exit 0
+fi
+if [[ "$*" == *"ps --all"* ]]; then
+  grep -Fx 'IMAGE_TAG=v1.2.3' .env >/dev/null
+  printf '%s\n' "$FAKE_HEALTH_ROWS"
+  exit 0
+fi
 echo "Unexpected fake docker command: $*" >&2
 exit 1
 STUB
@@ -101,6 +112,26 @@ run_deploy() {
   shift
   rm -rf "$REMOTE_DIR"
   mkdir -p "$REMOTE_DIR"
+  case ${INITIAL_REMOTE_ENV_STATE:-existing} in
+    existing)
+      printf '%s\n' \
+        'APP_SECRET=keep-this-value' \
+        'IMAGE_TAG=v1.1.0' \
+        'POSTGRES_PASSWORD=keep-this-too' \
+        'export IMAGE_TAG=duplicate-old-value' >"$REMOTE_DIR/.env"
+      chmod 640 "$REMOTE_DIR/.env"
+      ;;
+    missing)
+      ;;
+    symlink)
+      printf '%s\n' 'DO_NOT_REPLACE=true' >"$TMP_DIR/outside.env"
+      ln -s "$TMP_DIR/outside.env" "$REMOTE_DIR/.env"
+      ;;
+    *)
+      echo "Unknown INITIAL_REMOTE_ENV_STATE: $INITIAL_REMOTE_ENV_STATE" >&2
+      exit 1
+      ;;
+  esac
   : >"$TMP_DIR/commands.log"
   : >"$TMP_DIR/docker-config-path"
   (
@@ -147,6 +178,13 @@ grep -F "app|running|healthy" "$TMP_DIR/summary.md" >/dev/null
 summary_fence=$(printf '\140\140\140text')
 grep -Fx "$summary_fence" "$TMP_DIR/summary.md" >/dev/null
 [[ -f "$REMOTE_DIR/compose.prod.yaml" ]]
+grep -Fx 'APP_SECRET=keep-this-value' "$REMOTE_DIR/.env" >/dev/null
+grep -Fx 'POSTGRES_PASSWORD=keep-this-too' "$REMOTE_DIR/.env" >/dev/null
+grep -Fx 'IMAGE_TAG=v1.2.3' "$REMOTE_DIR/.env" >/dev/null
+[[ $(grep -c '^IMAGE_TAG=' "$REMOTE_DIR/.env") -eq 1 ]]
+if grep -F 'duplicate-old-value' "$REMOTE_DIR/.env" >/dev/null; then echo "Duplicate IMAGE_TAG entry was preserved." >&2; exit 1; fi
+env_mode=$(ruby -e 'printf "%o", File.stat(ARGV.fetch(0)).mode & 0777' "$REMOTE_DIR/.env")
+[[ "$env_mode" == 600 ]]
 docker_config_path=$(cat "$TMP_DIR/docker-config-path")
 [[ -n "$docker_config_path" && ! -d "$docker_config_path" ]]
 line_number() { grep -n -m 1 -F -- "$1" "$TMP_DIR/commands.log" | cut -d: -f1; }
@@ -157,12 +195,24 @@ login_line=$(line_number "docker login")
 deploy_line=$(line_number "--wait-timeout 300")
 (( preflight_line < scp_line && scp_line < validation_line && validation_line < login_line && login_line < deploy_line ))
 write_valid_compose
+INITIAL_REMOTE_ENV_STATE=missing run_deploy "$TMP_DIR/missing-env-success.log"
+grep -Fx 'IMAGE_TAG=v1.2.3' "$REMOTE_DIR/.env" >/dev/null
+[[ $(wc -l <"$REMOTE_DIR/.env") -eq 1 ]]
+env_mode=$(ruby -e 'printf "%o", File.stat(ARGV.fetch(0)).mode & 0777' "$REMOTE_DIR/.env")
+[[ "$env_mode" == 600 ]]
+write_valid_compose
+if INITIAL_REMOTE_ENV_STATE=symlink run_deploy "$TMP_DIR/symlink-env.log"; then echo "Expected symlink .env rejection." >&2; exit 1; fi
+grep -F 'The deployment .env path must be a regular file.' "$TMP_DIR/symlink-env.log" >/dev/null
+grep -Fx 'DO_NOT_REPLACE=true' "$TMP_DIR/outside.env" >/dev/null
+write_valid_compose
 assert_failure mixed-resolved-application "Application images matching application-image-prefix must use the requested image tag." FAKE_COMPOSE_IMAGES=$'ghcr.io/example/app:v1.2.3\nghcr.io/example/app:latest\npostgres:16'
 assert_failure no-matching-application "No resolved Compose image matches application-image-prefix." FAKE_COMPOSE_IMAGES="postgres:16"
 assert_failure unhealthy-container "app|running|unhealthy" FAKE_HEALTH_ROWS="app|running|unhealthy"
+grep -Fx 'IMAGE_TAG=v1.2.3' "$REMOTE_DIR/.env" >/dev/null
 assert_failure missing-healthcheck "app|running|" FAKE_HEALTH_ROWS="app|running|"
 write_valid_compose
 assert_failure rename-failure "Simulated atomic rename failure." FAKE_MV_FAILURE=yes
+grep -Fx 'IMAGE_TAG=v1.1.0' "$REMOTE_DIR/.env" >/dev/null
 if grep -E '^docker .* up --detach' "$TMP_DIR/commands.log" >/dev/null; then echo "Compose up ran after the atomic rename failed." >&2; exit 1; fi
 if grep -F "StrictHostKeyChecking=no" "$WORKFLOW_PATH" >/dev/null; then echo "Workflow disables SSH host verification." >&2; exit 1; fi
 grep -F -- "--password-stdin" "$WORKFLOW_PATH" >/dev/null
@@ -174,9 +224,13 @@ grep -F "INPUT_APPLICATION_IMAGE_PREFIX" "$WORKFLOW_PATH" >/dev/null
 grep -F "Every application image must use required IMAGE_TAG interpolation." "$WORKFLOW_PATH" >/dev/null
 grep -F "No resolved Compose image matches application-image-prefix." "$WORKFLOW_PATH" >/dev/null
 grep -F "Application images matching application-image-prefix must use the requested image tag." "$WORKFLOW_PATH" >/dev/null
+grep -F "The deployment .env path must be a regular file." "$WORKFLOW_PATH" >/dev/null
+grep -F 'chmod 600 \"\$temporary_env\"' "$WORKFLOW_PATH" >/dev/null
 grep -F 'group: deploy-vps-compose-${{ github.repository }}' "$WORKFLOW_PATH" >/dev/null
 [[ -f "$DOC_PATH" && -f "$EXAMPLE_PATH" ]]
 grep -F "deploy-vps-compose" "$ROOT_DIR/README.md" >/dev/null
+grep -F 'persistent image tag' "$ROOT_DIR/README.md" >/dev/null
+grep -F 'IMAGE_TAG=<image-tag>' "$DOC_PATH" >/dev/null
 grep -F "needs: build" "$EXAMPLE_PATH" >/dev/null
 grep -F 'needs.build.outputs.image_tag' "$EXAMPLE_PATH" >/dev/null
 grep -F 'needs.build.outputs.image_name' "$EXAMPLE_PATH" >/dev/null

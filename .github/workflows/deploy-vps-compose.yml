@@ -203,7 +203,36 @@ jobs:
             "set -eu
              cd '$deploy_path'
              mv '$temporary_name' compose.prod.yaml
-             export IMAGE_TAG='$image_tag'
+             env_file=.env
+             if [ -L \"\$env_file\" ] || { [ -e \"\$env_file\" ] && [ ! -f \"\$env_file\" ]; }; then
+               echo 'The deployment .env path must be a regular file.' >&2
+               exit 1
+             fi
+             temporary_env=\$(mktemp .env.XXXXXX)
+             trap 'rm -f \"\$temporary_env\"' EXIT HUP INT TERM
+             if [ -f \"\$env_file\" ]; then
+               awk -v image_tag='$image_tag' '
+                 BEGIN { written = 0 }
+                 /^[[:space:]]*(export[[:space:]]+)?IMAGE_TAG[[:space:]]*=/ {
+                   if (!written) {
+                     print \"IMAGE_TAG=\" image_tag
+                     written = 1
+                   }
+                   next
+                 }
+                 { print \$0 }
+                 END {
+                   if (!written) {
+                     print \"IMAGE_TAG=\" image_tag
+                   }
+                 }
+               ' \"\$env_file\" >\"\$temporary_env\"
+             else
+               printf 'IMAGE_TAG=%s\\n' '$image_tag' >\"\$temporary_env\"
+             fi
+             chmod 600 \"\$temporary_env\"
+             mv \"\$temporary_env\" \"\$env_file\"
+             trap - EXIT HUP INT TERM
              up_status=0
              docker compose -f compose.prod.yaml up --detach --remove-orphans \
                --wait --wait-timeout $health_timeout || up_status=\$?
